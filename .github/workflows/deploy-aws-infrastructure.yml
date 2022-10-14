@@ -1,0 +1,71 @@
+name: Ceramic Cloud Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      ceramic-network:
+        description: "Ceramic network to deploy to"
+        required: true
+        default: "testnet-clay"
+        type: choice
+        options:
+          - testnet-clay
+          - mainnet
+          - testnet-devel
+      cloud-provider:
+        description: "Which cloud provider are you using?"
+        required: true
+        default: "AWS"
+        type: choice
+        options:
+          - AWS
+          - Digital-Ocean
+          - GCP
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_DEFAULT_REGION: us-east-1
+  IPFS_BUCKET_NAME: ipfs-bucket-${{ github.sha }}
+  CERAMIC_BUCKET_NAME: ceramic-bucket-${{ github.sha }}
+  CONFIG_WORKSPACE: ${{ github.workspace }}/.github/config/ceramic-aws-node
+
+jobs:
+  deploy_infrastructure:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 0.14.7
+
+      - name: Terraform Init
+        working-directory: ./.github/config/ceramic-aws-node
+        run: terraform -chdir=${{ env.CONFIG_WORKSPACE }} init
+
+      - name: Terrafom Apply
+        working-directory: ./.github/config/ceramic-aws-node
+        run: terraform -chdir=${{ env.CONFIG_WORKSPACE }} apply -auto-approve
+        env:
+          TF_VAR_ceramic_bucket_name: ${{ env.CERAMIC_BUCKET_NAME }}
+          TF_VAR_ipfs_bucket_name: ${{ env.IPFS_BUCKET_NAME }}
+          TF_VAR_ceramic_network: ${{ inputs.ceramic-network }}
+          TF_VAR_ansible_public_key: ${{ secrets.ANSIBLE_PUBLIC_KEY }}
+
+      - name: Decrypt large secret
+        working-directory: ./.github/config
+        run: ./decrypt_secret.sh
+        env:
+          SSH_PASSPHRASE: ${{ secrets.SSH_PASSPHRASE }}
+
+      # run ansible playbook
+      # TODO: change location of inventory file to make this more reusable
+      - name: Run Ansible Playbook
+        working-directory: ./.github/config
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: false
+        run: |
+          ansible-playbook -i ./ceramic-aws-node/inventory configure-nodes.yml --private-key $HOME/secrets/ansible-key -e 'ansible_ssh_user=ubuntu'
